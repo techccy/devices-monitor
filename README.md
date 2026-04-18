@@ -56,7 +56,7 @@ With TURN server (for restrictive NAT environments):
 ### 2. Start the Agent (on monitored device)
 
 ```bash
-./bin/ccy-agent -server ws://localhost:8080/api/ws -id your-device-id
+./bin/ccy-agent -server ws://localhost:8080/api/ws -id your-device-id -key your-device-key
 ```
 
 ### 3. Use the CLI
