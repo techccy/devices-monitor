@@ -4,21 +4,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/ccy/devices-monitor/internal/common"
+	"github.com/ccy/devices-monitor/pkg/config"
 	"github.com/gorilla/websocket"
 	"net"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
+	"sync"
 	"time"
 )
 
 type Agent struct {
-	serverURL string
-	deviceID  string
-	deviceKey string
-	conn      *websocket.Conn
-	done      chan struct{}
-	heartbeat int
+	serverURL      string
+	deviceID       string
+	deviceKey      string
+	conn           *websocket.Conn
+	done           chan struct{}
+	heartbeat      int
+	heartbeatTimer *time.Ticker
+	lastPingTime   time.Time
+	mu             sync.Mutex
+	webrtcAgent    *WebRTCAgent
+	turnConfig     *config.TURNServerConfig
 }
 
 func NewAgent(serverURL, deviceID, deviceKey string, heartbeat int) *Agent {
@@ -37,11 +45,14 @@ func (a *Agent) Start() error {
 
 	fmt.Printf("Starting agent for device %s (%s)\n", hostname, identifier)
 
+	a.webrtcAgent = NewWebRTCAgent(a)
+
 	if err := a.connect(); err != nil {
 		return err
 	}
 
-	go a.heartbeatLoop()
+	go a.startHeartbeat()
+	go a.handleHeartbeat()
 	go a.readLoop()
 
 	<-a.done
@@ -49,8 +60,8 @@ func (a *Agent) Start() error {
 }
 
 func (a *Agent) connect() error {
-	backoff := 1 * time.Second
-	maxBackoff := 60 * time.Second
+	backoff := 2 * time.Second
+	maxBackoff := 5 * time.Minute
 
 	serverURL := a.serverURL
 	if a.deviceID != "" && a.deviceKey != "" {
@@ -62,6 +73,9 @@ func (a *Agent) connect() error {
 		if err == nil {
 			a.conn = conn
 			fmt.Println("Connected to server")
+			a.mu.Lock()
+			a.lastPingTime = time.Now()
+			a.mu.Unlock()
 			return nil
 		}
 
@@ -75,17 +89,17 @@ func (a *Agent) connect() error {
 	}
 }
 
-func (a *Agent) heartbeatLoop() {
+func (a *Agent) startHeartbeat() {
 	interval := time.Duration(a.heartbeat) * time.Second
 	if interval == 0 {
 		interval = 5 * time.Minute
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	a.heartbeatTimer = time.NewTicker(interval)
+	defer a.heartbeatTimer.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-a.heartbeatTimer.C:
 			if err := a.sendSnapshot(); err != nil {
 				fmt.Printf("Failed to send snapshot: %v\n", err)
 			}
@@ -93,6 +107,24 @@ func (a *Agent) heartbeatLoop() {
 			return
 		}
 	}
+}
+
+func (a *Agent) handleHeartbeat() {
+	go func() {
+		for {
+			time.Sleep(30 * time.Second)
+			pong := common.WSPong{
+				Type:      "PONG",
+				Timestamp: time.Now().Unix(),
+			}
+			data, _ := json.Marshal(pong)
+			if a.conn != nil {
+				if err := a.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+					fmt.Printf("Failed to send pong: %v\n", err)
+				}
+			}
+		}
+	}()
 }
 
 func (a *Agent) readLoop() {
@@ -111,6 +143,27 @@ func (a *Agent) readLoop() {
 			}
 
 			if messageType == websocket.TextMessage {
+				var ping common.WSPing
+				if err := json.Unmarshal(data, &ping); err == nil && ping.Type == "PING" {
+					a.mu.Lock()
+					a.lastPingTime = time.Now()
+					a.mu.Unlock()
+					fmt.Printf("Received PING from server\n")
+					continue
+				}
+
+				var offer common.WebRTCOffer
+				if err := json.Unmarshal(data, &offer); err == nil && offer.Type == "OFFER" {
+					go a.webrtcAgent.HandleWebRTCOffer(offer)
+					continue
+				}
+
+				var ice common.WebRTCIceCandidate
+				if err := json.Unmarshal(data, &ice); err == nil && ice.Type == "ICE_CANDIDATE" {
+					go a.webrtcAgent.HandleICECandidate(ice)
+					continue
+				}
+
 				var cmd common.Command
 				if err := json.Unmarshal(data, &cmd); err == nil {
 					go a.handleCommand(cmd)
@@ -122,7 +175,17 @@ func (a *Agent) readLoop() {
 
 func (a *Agent) sendSnapshot() error {
 	snapshot := a.collectSnapshot()
-	data, err := json.Marshal(snapshot)
+	report := common.SnapshotReport{
+		Type: "SNAPSHOT_REPORT",
+		Data: &common.SnapshotData{
+			CPULoad:        snapshot.CPULoad,
+			MemUsedPercent: snapshot.MemUsedPercent,
+			NetLatencyMs:   snapshot.NetLatencyMs,
+			ProcessCount:   snapshot.ProcessCount,
+			Uptime:         snapshot.Uptime,
+		},
+	}
+	data, err := json.Marshal(report)
 	if err != nil {
 		return err
 	}
@@ -162,15 +225,22 @@ func (a *Agent) handleCommand(cmd common.Command) {
 
 func (a *Agent) collectSnapshot() *common.Snapshot {
 	cpu, mem, disk := a.getSystemMetrics()
+	processCount := a.getProcessCount()
+	uptime := a.getUptime()
 
 	return &common.Snapshot{
-		DeviceID:      a.deviceID,
-		Timestamp:     time.Now().Unix(),
-		CPUUsage:      cpu,
-		MemoryUsage:   mem,
-		DiskUsage:     disk,
-		DiskRemaining: 0,
-		NetworkStatus: "connected",
+		DeviceID:       a.deviceID,
+		Timestamp:      time.Now().Unix(),
+		CPUUsage:       cpu,
+		MemoryUsage:    mem,
+		DiskUsage:      disk,
+		DiskRemaining:  0,
+		NetworkStatus:  "connected",
+		CPULoad:        cpu,
+		MemUsedPercent: mem,
+		NetLatencyMs:   a.measureLatency(),
+		ProcessCount:   processCount,
+		Uptime:         uptime,
 	}
 }
 
@@ -220,6 +290,41 @@ func (a *Agent) handleSSH() string {
 
 func (a *Agent) getSystemMetrics() (cpu, mem, disk float64) {
 	return 50.0, 60.0, 70.0
+}
+
+func (a *Agent) getProcessCount() int {
+	var output []byte
+	var err error
+
+	if runtime.GOOS == "windows" {
+		output, err = exec.Command("tasklist").Output()
+	} else {
+		output, err = exec.Command("ps", "aux").Output()
+	}
+
+	if err != nil {
+		return 0
+	}
+
+	lines := len(strings.Split(string(output), "\n"))
+	return lines - 1
+}
+
+func (a *Agent) getUptime() string {
+	var output []byte
+	var err error
+
+	if runtime.GOOS == "windows" {
+		output, err = exec.Command("powershell", "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime").Output()
+	} else {
+		output, err = exec.Command("uptime", "-p").Output()
+	}
+
+	if err != nil {
+		return "unknown"
+	}
+
+	return strings.TrimSpace(string(output))
 }
 
 func (a *Agent) measureLatency() int64 {

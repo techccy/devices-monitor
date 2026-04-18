@@ -7,22 +7,31 @@ import (
 )
 
 type ServerConfig struct {
-	Addr     string `json:"addr"`
-	TLSAddr  string `json:"tls_addr"`
-	CertFile string `json:"cert_file"`
-	KeyFile  string `json:"key_file"`
-	Secret   string `json:"secret"`
+	Addr             string            `json:"addr"`
+	TLSAddr          string            `json:"tls_addr"`
+	CertFile         string            `json:"cert_file"`
+	KeyFile          string            `json:"key_file"`
+	Secret           string            `json:"secret"`
+	TURNServerConfig *TURNServerConfig `json:"turn_server,omitempty"`
+}
+
+type TURNServerConfig struct {
+	URI      string `json:"uri"`
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type AgentConfig struct {
-	ServerURL string `json:"server_url"`
-	DeviceID  string `json:"device_id"`
-	DeviceKey string `json:"device_key"`
-	Heartbeat int    `json:"heartbeat"`
+	ServerURL        string            `json:"server_url"`
+	DeviceID         string            `json:"device_id"`
+	DeviceKey        string            `json:"device_key"`
+	Heartbeat        int               `json:"heartbeat"`
+	TURNServerConfig *TURNServerConfig `json:"turn_server,omitempty"`
 }
 
 type CLIConfig struct {
-	ServerURL string `json:"server_url"`
+	ServerURL        string            `json:"server_url"`
+	TURNServerConfig *TURNServerConfig `json:"turn_server,omitempty"`
 }
 
 func LoadServerConfig(path string) (*ServerConfig, error) {

@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"github.com/ccy/devices-monitor/internal/common"
 	"github.com/ccy/devices-monitor/pkg/logger"
-	"github.com/ccy/devices-monitor/pkg/ssh"
-	"github.com/gorilla/websocket"
 	"io"
 	"net/http"
 	"os"
@@ -326,17 +324,18 @@ func (c *CLI) SSH(deviceID string) error {
 		return fmt.Errorf("not logged in. Please run 'ccy login' first")
 	}
 
-	wsURL := strings.Replace(c.serverURL, "http://", "ws://", 1)
-	wsURL += "/api/ws?device_id=" + deviceID
+	webrtcCLI := NewWebRTCCLI(c)
+	return webrtcCLI.Connect(deviceID)
+}
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+func (c *CLI) createRequest(method, endpoint string, data []byte) (*http.Request, error) {
+	req, err := http.NewRequest(method, c.serverURL+endpoint, bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
+		return nil, err
 	}
-	defer conn.Close()
-
-	tunnel := ssh.NewSSHTunnel(conn, deviceID)
-	return tunnel.Connect()
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	return req, nil
 }
 
 func (c *CLI) Logout() error {

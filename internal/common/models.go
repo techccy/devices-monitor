@@ -18,13 +18,77 @@ type Device struct {
 }
 
 type Snapshot struct {
+	DeviceID       string  `json:"device_id"`
+	Timestamp      int64   `json:"timestamp"`
+	CPUUsage       float64 `json:"cpu_usage"`
+	MemoryUsage    float64 `json:"memory_usage"`
+	DiskUsage      float64 `json:"disk_usage"`
+	DiskRemaining  int64   `json:"disk_remaining"`
+	NetworkStatus  string  `json:"network_status"`
+	CPULoad        float64 `json:"cpu_load"`
+	MemUsedPercent float64 `json:"mem_used_percent"`
+	NetLatencyMs   int64   `json:"net_latency_ms"`
+	ProcessCount   int     `json:"process_count"`
+	Uptime         string  `json:"uptime"`
+}
+
+type WSPing struct {
+	Type      string `json:"type"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+type WSPong struct {
+	Type      string `json:"type"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+type SnapshotReport struct {
+	Type string        `json:"type"`
+	Data *SnapshotData `json:"data"`
+}
+
+type SnapshotData struct {
+	CPULoad        float64 `json:"cpu_load"`
+	MemUsedPercent float64 `json:"mem_used_percent"`
+	NetLatencyMs   int64   `json:"net_latency_ms"`
+	ProcessCount   int     `json:"process_count"`
+	Uptime         string  `json:"uptime"`
+}
+
+type WebRTCMessage struct {
+	Type      string      `json:"type"`
+	DeviceID  string      `json:"device_id"`
+	SessionID string      `json:"session_id,omitempty"`
+	Data      interface{} `json:"data,omitempty"`
+}
+
+type WebRTCOffer struct {
+	Type      string `json:"type"`
+	DeviceID  string `json:"device_id"`
+	SessionID string `json:"session_id"`
+	SDP       string `json:"sdp"`
+}
+
+type WebRTCAnswer struct {
+	Type      string `json:"type"`
+	DeviceID  string `json:"device_id"`
+	SessionID string `json:"session_id"`
+	SDP       string `json:"sdp"`
+}
+
+type WebRTCIceCandidate struct {
+	Type          string  `json:"type"`
 	DeviceID      string  `json:"device_id"`
-	Timestamp     int64   `json:"timestamp"`
-	CPUUsage      float64 `json:"cpu_usage"`
-	MemoryUsage   float64 `json:"memory_usage"`
-	DiskUsage     float64 `json:"disk_usage"`
-	DiskRemaining int64   `json:"disk_remaining"`
-	NetworkStatus string  `json:"network_status"`
+	SessionID     string  `json:"session_id"`
+	Candidate     string  `json:"candidate"`
+	SDPMLineIndex *uint16 `json:"sdp_mline_index"`
+	SDPMid        *string `json:"sdp_mid"`
+}
+
+type PTYResize struct {
+	Type string `json:"type"`
+	Cols int    `json:"cols"`
+	Rows int    `json:"rows"`
 }
 
 type NetworkInfo struct {

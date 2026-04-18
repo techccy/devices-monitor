@@ -14,20 +14,23 @@ import (
 )
 
 type Server struct {
-	storage   *storage.Storage
-	auth      *auth.Auth
-	wsManager *WSManager
-	logger    *logger.Logger
-	metrics   *metrics.Metrics
+	storage          *storage.Storage
+	auth             *auth.Auth
+	wsManager        *WSManager
+	signalingManager *SignalingManager
+	logger           *logger.Logger
+	metrics          *metrics.Metrics
 }
 
 func NewServer(storage *storage.Storage, auth *auth.Auth) *Server {
+	wsManager := NewWSManager(storage)
 	return &Server{
-		storage:   storage,
-		auth:      auth,
-		wsManager: NewWSManager(storage),
-		logger:    logger.NewLogger(),
-		metrics:   metrics.NewMetrics(),
+		storage:          storage,
+		auth:             auth,
+		wsManager:        wsManager,
+		signalingManager: NewSignalingManager(wsManager),
+		logger:           logger.NewLogger(),
+		metrics:          metrics.NewMetrics(),
 	}
 }
 
@@ -39,6 +42,9 @@ func (s *Server) Start(addr string) error {
 	http.HandleFunc("/api/devices", s.authMiddleware(s.handleDevices))
 	http.HandleFunc("/api/devices/", s.authMiddleware(s.handleDeviceCommands))
 	http.HandleFunc("/api/ws", s.handleWebSocket)
+	http.HandleFunc("/api/webrtc/offer", s.authMiddleware(s.handleWebRTCOffer))
+	http.HandleFunc("/api/webrtc/answer", s.authMiddleware(s.handleWebRTCAnswer))
+	http.HandleFunc("/api/webrtc/ice", s.authMiddleware(s.handleWebRTCICE))
 
 	return http.ListenAndServe(addr, nil)
 }
@@ -323,4 +329,87 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(statusCode int) {
 	rw.status = statusCode
 	rw.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (s *Server) handleWebRTCOffer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	claims := r.Context().Value("claims").(*auth.Claims)
+
+	var req common.WebRTCOffer
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	sessionID := s.signalingManager.CreateSession(req.DeviceID, claims.UserID)
+
+	err := s.signalingManager.HandleOffer(sessionID, req.DeviceID, req.SDP)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"session_id": sessionID,
+	})
+}
+
+func (s *Server) handleWebRTCAnswer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	claims := r.Context().Value("claims").(*auth.Claims)
+
+	var req common.WebRTCAnswer
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	err := s.signalingManager.HandleAnswer(req.SessionID, claims.UserID, req.SDP)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleWebRTCICE(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	claims := r.Context().Value("claims").(*auth.Claims)
+
+	var req common.WebRTCIceCandidate
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	sdpMLineIndex := uint16(0)
+	sdpMid := ""
+	if req.SDPMLineIndex != nil {
+		sdpMLineIndex = *req.SDPMLineIndex
+	}
+	if req.SDPMid != nil {
+		sdpMid = *req.SDPMid
+	}
+
+	err := s.signalingManager.HandleICECandidate(req.SessionID, req.DeviceID, claims.UserID, req.Candidate, sdpMLineIndex, sdpMid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }

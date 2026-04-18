@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 )
 
 var upgrader = websocket.Upgrader{
@@ -17,23 +18,28 @@ var upgrader = websocket.Upgrader{
 }
 
 type WSConnection struct {
-	conn     *websocket.Conn
-	deviceID string
-	send     chan []byte
+	conn         *websocket.Conn
+	deviceID     string
+	send         chan []byte
+	heartbeat    *time.Ticker
+	lastPongTime time.Time
+	mu           sync.Mutex
 }
 
 type WSManager struct {
-	storage     *storage.Storage
-	connections map[string]*WSConnection
-	mu          sync.RWMutex
-	pendingCmds map[string]chan *common.CommandResponse
+	storage        *storage.Storage
+	connections    map[string]*WSConnection
+	cliConnections map[string]*WSConnection
+	mu             sync.RWMutex
+	pendingCmds    map[string]chan *common.CommandResponse
 }
 
 func NewWSManager(st *storage.Storage) *WSManager {
 	return &WSManager{
-		storage:     st,
-		connections: make(map[string]*WSConnection),
-		pendingCmds: make(map[string]chan *common.CommandResponse),
+		storage:        st,
+		connections:    make(map[string]*WSConnection),
+		cliConnections: make(map[string]*WSConnection),
+		pendingCmds:    make(map[string]chan *common.CommandResponse),
 	}
 }
 
@@ -67,9 +73,11 @@ func (m *WSManager) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wsConn := &WSConnection{
-		conn:     conn,
-		send:     make(chan []byte, 256),
-		deviceID: deviceID,
+		conn:         conn,
+		send:         make(chan []byte, 256),
+		deviceID:     deviceID,
+		heartbeat:    time.NewTicker(30 * time.Second),
+		lastPongTime: time.Now(),
 	}
 
 	m.mu.Lock()
@@ -79,6 +87,7 @@ func (m *WSManager) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	m.storage.UpdateDeviceStatus(deviceID, true)
 	log.Printf("Device %s connected and authenticated", deviceID)
 
+	go wsConn.heartbeatLoop(m)
 	go wsConn.readPump(m)
 	go wsConn.writePump()
 }
@@ -129,6 +138,13 @@ func (ws *WSConnection) readPump(m *WSManager) {
 		}
 
 		if messageType == websocket.TextMessage {
+			var ping common.WSPing
+			if err := json.Unmarshal(data, &ping); err == nil && ping.Type == "PONG" {
+				ws.updatePongTime()
+				log.Printf("Received PONG from device %s", ws.deviceID)
+				continue
+			}
+
 			var cmd common.Command
 			if err := json.Unmarshal(data, &cmd); err == nil {
 				m.storage.SaveSnapshot(&common.Snapshot{
@@ -167,4 +183,47 @@ func (ws *WSConnection) writePump() {
 			}
 		}
 	}
+}
+
+func (ws *WSConnection) heartbeatLoop(m *WSManager) {
+	defer ws.heartbeat.Stop()
+
+	for {
+		select {
+		case <-ws.heartbeat.C:
+			ping := common.WSPing{
+				Type:      "PING",
+				Timestamp: time.Now().Unix(),
+			}
+			data, _ := json.Marshal(ping)
+			if err := ws.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				log.Printf("Failed to send ping to device %s: %v", ws.deviceID, err)
+				return
+			}
+
+			ws.mu.Lock()
+			if time.Since(ws.lastPongTime) > 90*time.Second {
+				log.Printf("Device %s heartbeat timeout", ws.deviceID)
+				ws.mu.Unlock()
+				ws.conn.Close()
+				return
+			}
+			ws.mu.Unlock()
+		case <-time.After(90 * time.Second):
+			ws.mu.Lock()
+			if time.Since(ws.lastPongTime) > 90*time.Second {
+				log.Printf("Device %s heartbeat timeout", ws.deviceID)
+				ws.mu.Unlock()
+				ws.conn.Close()
+				return
+			}
+			ws.mu.Unlock()
+		}
+	}
+}
+
+func (ws *WSConnection) updatePongTime() {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	ws.lastPongTime = time.Now()
 }
