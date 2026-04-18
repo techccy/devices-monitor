@@ -1,0 +1,6 @@
+{
+  "server_url": "ws://localhost:8080/api/ws",
+  "device_id": "your-device-id",
+  "device_key": "your-device-key",
+  "heartbeat": 300
+}

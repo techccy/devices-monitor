@@ -1,0 +1,18 @@
+[Unit]
+Description=CCY Devices Monitor Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/ccy
+ExecStart=/opt/ccy/bin/ccy-agent -config /opt/ccy/config/agent.json
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ccy-agent
+
+[Install]
+WantedBy=multi-user.target

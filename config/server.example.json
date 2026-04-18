@@ -1,0 +1,7 @@
+{
+  "addr": ":8080",
+  "tls_addr": "",
+  "cert_file": "",
+  "key_file": "",
+  "secret": "your-secret-key-change-in-production"
+}
